@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from core import (
+    KiwiClient,
+    FlightOptimizer,
+    SearchRequest,
+    CityNotFoundError,
+    KiwiAPIError,
+)
+
+API_KEY = "fUfVhV-v87mtISxkJPlasopiB3mmosJ1"
+
+
+def setup_logging(verbose: bool = False) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+
+
+def create_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Find the best flight by price per kilometer",
+        epilog="Example: ./flight-optimizer --from London --to Paris Berlin",
+    )
+
+    parser.add_argument(
+        "--from",
+        dest="from_city",
+        required=True,
+        help="Departure city",
+    )
+
+    parser.add_argument(
+        "--to",
+        dest="to_cities",
+        nargs="+",
+        required=True,
+        help="Destination cities",
+    )
+
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed output")
+    parser.add_argument("--all", action="store_true", help="Show all destinations sorted by $/km")
+
+    return parser
+
+
+def format_price_per_km(price_per_km: float) -> str:
+    return f"${price_per_km:.2f}/km"
+
+
+def main() -> int:
+    parser = create_parser()
+    args = parser.parse_args()
+
+    setup_logging(args.verbose)
+    logger = logging.getLogger(__name__)
+
+    try:
+        with KiwiClient(API_KEY) as client:
+            optimizer = FlightOptimizer(client)
+            request = SearchRequest(from_city=args.from_city, to_cities=args.to_cities)
+
+            if args.all:
+                results = optimizer.find_all_flights_sorted(request)
+
+                if not results:
+                    print(f"No flights found from {args.from_city}")
+                    return 1
+
+                print(f"\nFlights from {args.from_city} (sorted by $/km):\n")
+                print(f"{'Destination':<15} {'Price':>10} {'Distance':>12} {'$/km':>10}")
+                print("-" * 50)
+
+                for result in results:
+                    print(
+                        f"{result.destination:<15} "
+                        f"${result.price:>8.2f} "
+                        f"{result.distance_km:>10.0f}km "
+                        f"{format_price_per_km(result.price_per_km):>10}"
+                    )
+
+                print()
+                print(f"Best: {results[0].destination} at {format_price_per_km(results[0].price_per_km)}")
+
+            else:
+                response = optimizer.find_best_flight(request)
+                print(response.best_destination)
+                print(format_price_per_km(response.price_per_km))
+
+                if args.verbose:
+                    print(f"\nDetails:")
+                    print(f"  Total price: ${response.total_price:.2f}")
+                    print(f"  Distance: {response.distance_km:.0f} km")
+                    print(f"  Searched: {response.searched_destinations} destinations")
+                    print(f"  Found flights: {response.successful_searches}")
+
+        return 0
+
+    except CityNotFoundError as e:
+        print(f"Error: Could not find city '{e.city_name}'", file=sys.stderr)
+        return 1
+
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    except KiwiAPIError as e:
+        print(f"Error: API communication failed - {e}", file=sys.stderr)
+        return 1
+
+    except KeyboardInterrupt:
+        print("\nSearch cancelled.", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
